@@ -126,22 +126,24 @@ export default function MapScreen({ route }: Props) {
             <View style={styles.comparisonRow}>
               {/* Fastest Path Stat Block */}
               <View style={[styles.statBlock, { borderColor: '#9aa0a6' }]}>
-                <Text style={styles.statLabel}>Standard Route</Text>
-                <Text style={styles.statValue}>{(comparison.standard_total_meters / 1609.34).toFixed(2)} mi</Text>
-                <Text style={styles.statSub}>Score: {comparison.standard_shade_score.toFixed(0)} / 100</Text>
+                <Text style={styles.statLabel}>Shortest Path</Text>
+                <Text style={styles.statValue}>{Math.ceil(comparison.standard_total_meters / 84)} min</Text>
+                <Text style={styles.statSub}>{(comparison.standard_total_meters / 1609.34).toFixed(2)} mi</Text>
+                <Text style={styles.statSub}>Shaded: {comparison.standard_shade_score.toFixed(0)}%</Text>
               </View>
 
               {/* Coolest Path Stat Block */}
               <View style={[styles.statBlock, { borderColor: '#188038', backgroundColor: '#e6f4ea' }]}>
-                 <Text style={[styles.statLabel, {color: '#188038'}]}>Coolest Route</Text>
-                 <Text style={[styles.statValue, {color: '#188038'}]}>{(comparison.cool_total_meters / 1609.34).toFixed(2)} mi</Text>
-                 <Text style={[styles.statSub, {color: '#188038'}]}>Score: {comparison.cool_shade_score.toFixed(0)} / 100</Text>
+                 <Text style={[styles.statLabel, {color: '#188038'}]}>Cool Path</Text>
+                 <Text style={[styles.statValue, {color: '#188038'}]}>{Math.ceil(comparison.cool_total_meters / 84)} min</Text>
+                 <Text style={[styles.statSub, {color: '#188038'}]}>{(comparison.cool_total_meters / 1609.34).toFixed(2)} mi</Text>
+                 <Text style={[styles.statSub, {color: '#188038', fontWeight: 'bold'}]}>Shaded: {comparison.cool_shade_score.toFixed(0)}%</Text>
               </View>
             </View>
 
             <View style={styles.metricCard}>
               <Text style={styles.metricText}>
-                You avoid <Text style={styles.highlightText}>{comparison.heat_exposure_saved_percentage.toFixed(0)}%</Text> of raw heat exposure by taking the cool path!
+                The Cool Path gives you <Text style={styles.highlightText}>+{(comparison.cool_shade_score - comparison.standard_shade_score).toFixed(0)}%</Text> more shade optimization than the normal shortest path!
               </Text>
             </View>
             
