@@ -16,6 +16,11 @@ const INITIAL_REGION = {
 // Zoom threshold: must be zoomed in tighter than this to show POIs
 const ZOOM_THRESHOLD = 0.015;
 
+// Navigation camera constants
+const NAV_ZOOM = 20;
+const NAV_PITCH = 65;
+const NAV_ALTITUDE = 50;
+
 interface OverpassCoord {
   latitude: number;
   longitude: number;
@@ -285,10 +290,10 @@ export default function HomeScreen() {
     mapRef.current?.animateCamera(
       {
         center: { latitude: center.latitude, longitude: center.longitude },
-        pitch: 65,
+        pitch: NAV_PITCH,
         heading: 0,
-        zoom: 30,
-        altitude: 50,
+        zoom: NAV_ZOOM,
+        altitude: NAV_ALTITUDE,
       },
       { duration: 1000 }
     );
@@ -342,7 +347,9 @@ export default function HomeScreen() {
         mapRef.current?.animateCamera(
           {
             center: { latitude: center.latitude, longitude: center.longitude },
-            pitch: 65, zoom: 20, altitude: 50,
+            pitch: NAV_PITCH,
+            zoom: NAV_ZOOM,
+            altitude: NAV_ALTITUDE,
           },
           { duration: 600 }
         );
