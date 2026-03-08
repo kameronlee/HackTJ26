@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, TextInput, TouchableOpacity, Platform, Activity
 import MapView, { Circle, Marker, Polyline, Region, UrlTile } from 'react-native-maps';
 import BottomSheet, { BottomSheetScrollView } from '@gorhom/bottom-sheet';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { MapPin, Navigation, ChevronLeft, TreePine, Layers, LocateFixed, Map as MapIcon, History } from 'lucide-react-native';
+import { MapPin, Navigation, ChevronLeft, TreePine, Layers, LocateFixed, Map as MapIcon, History, X } from 'lucide-react-native';
 import * as Location from 'expo-location';
 
 const INITIAL_REGION = {
@@ -14,12 +14,12 @@ const INITIAL_REGION = {
 };
 
 // Zoom threshold: must be zoomed in tighter than this to show POIs
-const ZOOM_THRESHOLD = 0.015;
+// (Increased to 0.2 because pitched 3D views dramatically inflate longitudeDelta)
+const ZOOM_THRESHOLD = 0.2;
 
 // Navigation camera constants
-const NAV_ZOOM = 20;
 const NAV_PITCH = 65;
-const NAV_ALTITUDE = 50;
+const NAV_ALTITUDE = 45;
 
 interface OverpassCoord {
   latitude: number;
@@ -58,7 +58,9 @@ export default function HomeScreen() {
 
   // Navigation mode
   const [isNavigating, setIsNavigating] = useState(false);
+  const isNavigatingRef = useRef(false);
   const [followMode, setFollowMode] = useState(true);
+  const [originalDestination, setOriginalDestination] = useState<any>(null);
 
   // Search History
   const [searchHistory, setSearchHistory] = useState<any[]>([]);
@@ -129,6 +131,14 @@ export default function HomeScreen() {
 
   // --- Debounced map region change handler ---
   const handleRegionChange = (region: Region) => {
+    // If navigation is active, the 3D map pitch creates an artificially massive bounding box
+    // centered miles ahead. If we fetch POIs here, it will wipe our local POIs. 
+    // We already have the POIs we need, so completely bypass fetching.
+    if (isNavigatingRef.current) {
+      setIsZoomedIn(true);
+      return;
+    }
+
     const zoomed = region.longitudeDelta <= ZOOM_THRESHOLD;
     setIsZoomedIn(zoomed);
 
@@ -216,9 +226,9 @@ export default function HomeScreen() {
     Keyboard.dismiss();
   };
 
-  const fetchDualRoute = async () => {
-    let activeStart = startCoord;
-    let activeEnd = destinationCoords;
+  const fetchDualRoute = async (customStart?: any, customDest?: any) => {
+    let activeStart = customStart || startCoord;
+    let activeEnd = customDest || destinationCoords;
 
     if (!activeStart || !activeEnd) {
       activeStart = { latitude: 38.8906, longitude: -76.9803 };
@@ -251,12 +261,26 @@ export default function HomeScreen() {
       setComparison(data.comparison);
 
       if (data.cool_route?.length > 0) {
-        mapRef.current?.fitToCoordinates(data.cool_route, {
-          edgePadding: { top: 120, right: 60, bottom: Dimensions.get('window').height * 0.5, left: 60 },
-          animated: true,
-        });
+        if (isNavigatingRef.current && followMode) {
+          mapRef.current?.animateCamera(
+            {
+              center: { latitude: activeStart.latitude, longitude: activeStart.longitude },
+              pitch: NAV_PITCH,
+              altitude: NAV_ALTITUDE,
+            },
+            { duration: 600 }
+          );
+        } else {
+          mapRef.current?.fitToCoordinates(data.cool_route, {
+            edgePadding: { top: 120, right: 60, bottom: Dimensions.get('window').height * 0.5, left: 60 },
+            animated: true,
+          });
+        }
       }
-      bottomSheetRef.current?.snapToIndex(1);
+      
+      if (!isNavigatingRef.current) {
+        bottomSheetRef.current?.snapToIndex(1);
+      }
     } catch (err: any) {
       Alert.alert("Error", err.message);
       setIsExpanded(true);
@@ -267,40 +291,59 @@ export default function HomeScreen() {
 
   // --- Navigation Mode ---
   const startNavigation = async () => {
-    const center = startCoord || (coolRoute.length > 0 ? coolRoute[0] : null);
+    // Rely exclusively on the routed graph node rather than the raw user input coordinate
+    // because the backend snaps the route to the nearest walk-able street node.
+    const center = coolRoute.length > 0 ? coolRoute[0] : startCoord;
     if (!center) return;
-    setIsNavigating(true);
-    setFollowMode(true);
-    bottomSheetRef.current?.close();
-
-    // Start heading tracking
+    
+    // Pre-fetch heading so the intial swoop perfectly aligns with the user's direction
+    let initialHeading = 0;
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status === 'granted') {
-        headingSubRef.current = await Location.watchHeadingAsync((headingObj) => {
-          if (mapRef.current) {
-            mapRef.current.animateCamera({ heading: headingObj.trueHeading || headingObj.magHeading }, { duration: 100 });
-          }
-        });
+        const h = await Location.getHeadingAsync();
+        initialHeading = h.trueHeading || h.magHeading;
       }
     } catch (e) {
-      console.warn("Heading tracking failed:", e);
+      console.warn("Failed to get initial heading:", e);
     }
+
+    setIsNavigating(true);
+    isNavigatingRef.current = true;
+    setFollowMode(true);
+    bottomSheetRef.current?.close();
 
     mapRef.current?.animateCamera(
       {
         center: { latitude: center.latitude, longitude: center.longitude },
         pitch: NAV_PITCH,
-        heading: 0,
-        zoom: NAV_ZOOM,
+        heading: initialHeading,
         altitude: NAV_ALTITUDE,
       },
       { duration: 1000 }
     );
+
+    // Start heading tracking AFTER animation to prevent interrupting the swoop
+    setTimeout(async () => {
+      if (!isNavigatingRef.current) return;
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status === 'granted') {
+          headingSubRef.current = await Location.watchHeadingAsync((headingObj) => {
+            if (mapRef.current) {
+              mapRef.current.animateCamera({ heading: headingObj.trueHeading || headingObj.magHeading }, { duration: 100 });
+            }
+          });
+        }
+      } catch (e) {
+        console.warn("Heading tracking failed:", e);
+      }
+    }, 1050);
   };
 
   const exitNavigation = () => {
     setIsNavigating(false);
+    isNavigatingRef.current = false;
     setFollowMode(false);
     
     // Stop heading tracking
@@ -328,32 +371,35 @@ export default function HomeScreen() {
     const newFollow = !followMode;
     setFollowMode(newFollow);
     if (newFollow) {
-      // Re-start heading tracking if we enter follow mode
-      try {
-        if (!headingSubRef.current) {
-           const { status } = await Location.requestForegroundPermissionsAsync();
-           if (status === 'granted') {
-             headingSubRef.current = await Location.watchHeadingAsync((headingObj) => {
-               if (mapRef.current) {
-                 mapRef.current.animateCamera({ heading: headingObj.trueHeading || headingObj.magHeading }, { duration: 100 });
-               }
-             });
-           }
-        }
-      } catch (e) {}
-
-      const center = startCoord || (coolRoute.length > 0 ? coolRoute[0] : null);
+      const center = coolRoute.length > 0 ? coolRoute[0] : startCoord;
       if (center) {
         mapRef.current?.animateCamera(
           {
             center: { latitude: center.latitude, longitude: center.longitude },
             pitch: NAV_PITCH,
-            zoom: NAV_ZOOM,
             altitude: NAV_ALTITUDE,
           },
           { duration: 600 }
         );
       }
+
+      // Re-start heading tracking AFTER the main animation finishes
+      setTimeout(async () => {
+        // use local closure check since state might not be updated here? Actually relying on a ref would be better
+        // but checking the new state variable helps slightly
+        try {
+          if (!headingSubRef.current) {
+             const { status } = await Location.requestForegroundPermissionsAsync();
+             if (status === 'granted') {
+               headingSubRef.current = await Location.watchHeadingAsync((headingObj) => {
+                 if (mapRef.current) {
+                   mapRef.current.animateCamera({ heading: headingObj.trueHeading || headingObj.magHeading }, { duration: 100 });
+                 }
+               });
+             }
+          }
+        } catch (e) {}
+      }, 650);
     } else {
       // Stop heading tracking in free view so the user can pan/rotate freely
       if (headingSubRef.current) {
@@ -361,10 +407,78 @@ export default function HomeScreen() {
         headingSubRef.current = null;
       }
       mapRef.current?.animateCamera(
-        { pitch: 0, heading: 0 },
+        { pitch: 0, heading: 0, altitude: 2000 },
         { duration: 600 }
       );
     }
+  };
+
+  const handleMapDrag = () => {
+    if (isNavigating && followMode) {
+      setFollowMode(false);
+      // Stop heading tracking so user can pan freely
+      if (headingSubRef.current) {
+        headingSubRef.current.remove();
+        headingSubRef.current = null;
+      }
+    }
+  };
+
+  const handleDetour = (type: 'bench' | 'water') => {
+    const pois = type === 'bench' ? benches : waterFountains;
+    if (pois.length === 0) {
+      Alert.alert("No Data", `No ${type}s loaded in this area. Try zooming out slightly to load POIs.`);
+      return;
+    }
+    
+    // Switch to 2D bird's-eye view automatically
+    if (followMode) {
+      setFollowMode(false);
+      if (headingSubRef.current) {
+        headingSubRef.current.remove();
+        headingSubRef.current = null;
+      }
+      mapRef.current?.animateCamera(
+        { pitch: 0, heading: 0, altitude: 2000 },
+        { duration: 600 }
+      );
+    }
+    
+    // Find closest from startCoord
+    const start = startCoord || { latitude: 38.8906, longitude: -76.9803 };
+    let closest = pois[0];
+    let minD = Infinity;
+    pois.forEach(p => {
+      const dx = p.latitude - start.latitude;
+      const dy = p.longitude - start.longitude;
+      const d = dx*dx + dy*dy;
+      if (d < minD) { minD = d; closest = p; }
+    });
+
+    // Save original destination if not already saved
+    if (!originalDestination) {
+      setOriginalDestination({ coord: destinationCoords, text: destText });
+    }
+
+    const newDest = { latitude: closest.latitude, longitude: closest.longitude };
+    setDestinationCoords(newDest);
+    setDestText(`${type === 'bench' ? 'Rest Bench' : 'Water Fountain'}`);
+    
+    // Re-fetch route with new destination
+    fetchDualRoute(startCoord, newDest);
+  };
+
+  const handleResumeJourney = () => {
+    if (!originalDestination) return;
+    
+    setDestinationCoords(originalDestination.coord);
+    setDestText(originalDestination.text);
+    
+    // Clear the saved destination so we exit detour mode
+    const oldDest = originalDestination.coord;
+    setOriginalDestination(null);
+    
+    fetchDualRoute(startCoord, oldDest);
   };
 
   const hasSuggestions = suggestions.length > 0;
@@ -379,6 +493,7 @@ export default function HomeScreen() {
         mapType={mapType}
         showsUserLocation={!isNavigating}
         onRegionChangeComplete={handleRegionChange}
+        onPanDrag={handleMapDrag}
         pitchEnabled={true}
         rotateEnabled={true}
       >
@@ -557,7 +672,7 @@ export default function HomeScreen() {
           ) : (
             /* Find Route button when no suggestions or history showing */
             <View style={styles.findBtnWrap}>
-              <TouchableOpacity style={styles.findBtn} onPress={fetchDualRoute}>
+              <TouchableOpacity style={styles.findBtn} onPress={() => fetchDualRoute()}>
                 <Navigation size={18} color="#fff" style={{ marginRight: 8 }} />
                 <Text style={styles.findBtnText}>Find Best Route</Text>
               </TouchableOpacity>
@@ -592,6 +707,41 @@ export default function HomeScreen() {
         </TouchableOpacity>
       )}
 
+      {/* ---- Navigation Detour Buttons / Resume Journey ---- */}
+      {isNavigating && (
+        <View style={[styles.detourContainer, { top: insets.top + 20 }]}>
+          {originalDestination ? (
+            <TouchableOpacity style={[styles.detourBtn, { backgroundColor: '#e8f0fe', borderColor: '#4285f4', borderWidth: 2 }]} onPress={handleResumeJourney} activeOpacity={0.8}>
+              <Text style={styles.detourEmoji}>↩️</Text>
+              <Text style={[styles.detourText, { color: '#1967d2' }]}>Resume Journey</Text>
+            </TouchableOpacity>
+          ) : (
+            <>
+              <TouchableOpacity style={styles.detourBtn} onPress={() => handleDetour('bench')} activeOpacity={0.8}>
+                <Text style={styles.detourEmoji}>🪑</Text>
+                <Text style={styles.detourText}>Need a break?</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.detourBtn} onPress={() => handleDetour('water')} activeOpacity={0.8}>
+                <Text style={styles.detourEmoji}>💧</Text>
+                <Text style={styles.detourText}>Take a sip?</Text>
+              </TouchableOpacity>
+            </>
+          )}
+        </View>
+      )}
+
+      {/* ---- Re-center Button ---- */}
+      {isNavigating && !followMode && (
+        <TouchableOpacity 
+          style={[styles.recenterBtn, { bottom: 100 + insets.bottom }]} 
+          onPress={toggleFollowMode}
+          activeOpacity={0.85}
+        >
+          <Navigation size={18} color="#202124" />
+          <Text style={styles.recenterText}>Re-center</Text>
+        </TouchableOpacity>
+      )}
+
       {/* ---- Navigation Mode Bottom Bar ---- */}
       {isNavigating && (
         <View style={[styles.navBottomBar, { paddingBottom: insets.bottom + 10 }]}>
@@ -601,6 +751,7 @@ export default function HomeScreen() {
             </Text>
             <Text style={styles.navBarDist}>
               {comparison ? `${(comparison.cool_total_meters / 1609.34).toFixed(2)} mi` : ''}
+              {originalDestination ? ' (to detour)' : ''}
             </Text>
           </View>
           <TouchableOpacity
@@ -644,7 +795,12 @@ export default function HomeScreen() {
           handleIndicatorStyle={styles.sheetHandle}
         >
           <BottomSheetScrollView contentContainerStyle={styles.sheetContent}>
-            <Text style={styles.sheetTitle}>Route Comparison</Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
+              <Text style={[styles.sheetTitle, { marginBottom: 0 }]}>Route Comparison</Text>
+              <TouchableOpacity onPress={() => bottomSheetRef.current?.close()} style={{ padding: 4 }}>
+                <X size={24} color="#5f6368" />
+              </TouchableOpacity>
+            </View>
             <View style={styles.compRow}>
               <View style={[styles.statBlock, styles.statGray]}>
                 <Text style={styles.statLabel}>Standard</Text>
@@ -665,10 +821,12 @@ export default function HomeScreen() {
             <View style={styles.metricCard}>
               <Text style={styles.metricText}>Extra distance: <Text style={styles.hl}>{Math.round(comparison.extra_distance_meters)} m</Text></Text>
             </View>
-            <TouchableOpacity style={styles.navBtn} onPress={startNavigation}>
-              <Navigation size={18} color="#fff" style={{ marginRight: 8 }} />
-              <Text style={styles.navBtnText}>Start Navigation</Text>
-            </TouchableOpacity>
+            {!isNavigating && (
+              <TouchableOpacity style={styles.navBtn} onPress={startNavigation}>
+                <Navigation size={18} color="#fff" style={{ marginRight: 8 }} />
+                <Text style={styles.navBtnText}>Start Navigation</Text>
+              </TouchableOpacity>
+            )}
             <View style={{ height: 30 }} />
           </BottomSheetScrollView>
         </BottomSheet>
@@ -866,4 +1024,32 @@ const styles = StyleSheet.create({
     borderRadius: 24,
   },
   navExitText: { color: '#fff', fontSize: 16, fontWeight: '800' },
+
+  // --- Recenter & Detour Buttons ---
+  recenterBtn: {
+    position: 'absolute', left: 16,
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.95)',
+    paddingVertical: 10, paddingHorizontal: 16,
+    borderRadius: 24,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 6, elevation: 5,
+    zIndex: 40,
+  },
+  recenterText: { color: '#202124', fontSize: 15, fontWeight: '700', marginLeft: 6 },
+  
+  detourContainer: {
+    position: 'absolute', right: 16,
+    alignItems: 'flex-end',
+    zIndex: 40,
+    gap: 12,
+  },
+  detourBtn: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.95)',
+    paddingVertical: 10, paddingHorizontal: 14,
+    borderRadius: 24,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 6, elevation: 5,
+  },
+  detourEmoji: { fontSize: 16, marginRight: 6 },
+  detourText: { color: '#202124', fontSize: 14, fontWeight: '700' },
 });

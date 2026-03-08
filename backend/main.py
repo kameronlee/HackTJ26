@@ -241,8 +241,19 @@ def get_route(req: RouteRequest):
         
     try:
         # 1. Start/End
-        start_node = ox.distance.nearest_nodes(G, X=req.start_lng, Y=req.start_lat)
-        end_node = ox.distance.nearest_nodes(G, X=req.end_lng, Y=req.end_lat)
+        # Find nearest edge first, which is much more robust for POIs inside buildings
+        # or parks that aren't exactly on a street node. We take the first node of that edge.
+        try:
+            # Fallback to nearest edge to handle indoor POIs better
+            start_edge = ox.distance.nearest_edges(G, X=req.start_lng, Y=req.start_lat)
+            start_node = start_edge[0]
+            
+            end_edge = ox.distance.nearest_edges(G, X=req.end_lng, Y=req.end_lat)
+            end_node = end_edge[0]
+        except Exception:
+            # Absolute fallback to raw nodes
+            start_node = ox.distance.nearest_nodes(G, X=req.start_lng, Y=req.start_lat)
+            end_node = ox.distance.nearest_nodes(G, X=req.end_lng, Y=req.end_lat)
         
         # 2. Dual Routing
         # Standard Route (Minimize Pure Distance)
