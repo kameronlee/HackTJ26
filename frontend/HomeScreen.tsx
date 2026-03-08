@@ -259,9 +259,9 @@ export default function HomeScreen() {
           <UrlTile urlTemplate="https://a.tile.openstreetmap.org/{z}/{x}/{y}.png" maximumZ={19} />
         )}
 
-        {/* Standard Route (dashed gray) */}
+        {/* Standard Route (solid red) */}
         {standardRoute.length > 0 && (
-          <Polyline coordinates={standardRoute} strokeColor="#9aa0a6" strokeWidth={4} lineDashPattern={[10, 10]} />
+          <Polyline coordinates={standardRoute} strokeColor="#EA4335" strokeWidth={4} />
         )}
         {/* Cool Route (solid blue) */}
         {coolRoute.length > 0 && (

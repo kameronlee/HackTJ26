@@ -54,10 +54,9 @@ def init_graph():
     print("Graph initialized successfully.")
 
 def fetch_sun_position():
-    """Returns sun altitude and azimuth for the graph center based on UTC now."""
-    now = datetime.now(timezone.utc)
-    alt = get_altitude(CENTER_LAT, CENTER_LNG, now)
-    azi = get_azimuth(CENTER_LAT, CENTER_LNG, now)
+    """Returns sun altitude and azimuth. Hardcoded to midday for demo."""
+    alt = 62.0   # Simulated midday altitude
+    azi = 190.0  # Simulated midday azimuth (slightly west of south)
     return alt, azi
 
 def fetch_temperature():
@@ -72,45 +71,92 @@ def fetch_temperature():
         return 80.0
 
 def fetch_and_join_building_data():
-    """Fetches buildings from DC open data and spatially joins with edges."""
+    """Fetches per-building height data from OpenStreetMap via Overpass API.
+    OSM buildings have 'building:levels' and 'height' tags with real polygon
+    geometry, enabling per-block spatial joins with road edges."""
     global G_proj
-    # 1. Fetch D.C. Open Data building footprints
-    geom = f'{BBOX["west"]},{BBOX["south"]},{BBOX["east"]},{BBOX["north"]}'
-    url = "https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DATA/Facility_and_Structure/MapServer/1/query"
-    params = {
-        "f": "geojson",
-        "geometry": geom,
-        "geometryType": "esriGeometryEnvelope",
-        "inSR": "4326",
-        "outSR": "4326",
-        "outFields": "MAX_HEIGHT",
-        "returnGeometry": "true"
-    }
+    from shapely.geometry import Polygon
     
-    print("Fetching building footprint data...")
+    # Overpass bbox format: south,west,north,east
+    bbox = f'{BBOX["south"]},{BBOX["west"]},{BBOX["north"]},{BBOX["east"]}'
+    query = f'''
+    [out:json][timeout:30];
+    (
+      way["building"]["building:levels"]({bbox});
+      way["building"]["height"]({bbox});
+    );
+    out body;
+    >;
+    out skel qt;
+    '''
+    
+    buildings_gdf = gpd.GeoDataFrame(columns=['geometry', 'height'], crs="EPSG:4326")
+    
     try:
-        response = requests.get(url, params=params, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        buildings_gdf = gpd.GeoDataFrame.from_features(data["features"], crs="EPSG:4326")
-        buildings_gdf = buildings_gdf.to_crs("EPSG:32618")
+        print("Fetching per-building heights from OpenStreetMap (Overpass)...")
+        r = requests.post('https://overpass-api.de/api/interpreter', data={'data': query}, timeout=45)
+        r.raise_for_status()
+        elements = r.json().get('elements', [])
+        
+        # Separate nodes and ways
+        nodes = {e['id']: (e['lon'], e['lat']) for e in elements if e['type'] == 'node'}
+        ways = [e for e in elements if e['type'] == 'way']
+        print(f"  Got {len(ways)} buildings, {len(nodes)} nodes.")
+        
+        # Build polygons with heights
+        rows = []
+        for w in ways:
+            tags = w.get('tags', {})
+            
+            # Get height: prefer explicit 'height' tag, fall back to levels * 3.5m
+            h = 0
+            if 'height' in tags:
+                try:
+                    h = float(str(tags['height']).replace('m', '').strip())
+                except (ValueError, TypeError):
+                    pass
+            if h <= 0 and 'building:levels' in tags:
+                try:
+                    h = float(tags['building:levels']) * 3.5
+                except (ValueError, TypeError):
+                    pass
+            
+            if h <= 0:
+                continue
+            
+            # Build polygon from node refs
+            coords = []
+            for nid in w.get('nodes', []):
+                if nid in nodes:
+                    coords.append(nodes[nid])
+            
+            if len(coords) >= 3:
+                rows.append({'geometry': Polygon(coords), 'height': h})
+        
+        if rows:
+            buildings_gdf = gpd.GeoDataFrame(rows, crs="EPSG:4326")
+            buildings_gdf = buildings_gdf.to_crs("EPSG:32618")
+            print(f"  Built {len(buildings_gdf)} building polygons (avg height: {buildings_gdf['height'].mean():.1f}m, max: {buildings_gdf['height'].max():.1f}m)")
+        else:
+            print("  No valid building polygons found.")
     except Exception as e:
-        print(f"Error fetching buildings: {e}. Will proceed without building heights.")
-        buildings_gdf = gpd.GeoDataFrame(columns=['geometry', 'MAX_HEIGHT'], crs="EPSG:32618")
-
+        print(f"  Error fetching Overpass data: {e}")
+    
+    # Spatial join: match buildings to nearby road edges
     edges_gdf = ox.graph_to_gdfs(G_proj, nodes=False, edges=True)
-
+    
     if not buildings_gdf.empty:
         edges_buffered = edges_gdf.copy()
-        edges_buffered.geometry = edges_buffered.geometry.buffer(5)
+        edges_buffered.geometry = edges_buffered.geometry.buffer(15)  # 15m buffer to catch adjacent buildings
         joined = gpd.sjoin(edges_buffered, buildings_gdf, how="left", predicate="intersects")
-        avg_heights = joined.groupby(level=[0, 1, 2])['MAX_HEIGHT'].mean().fillna(0)
+        avg_heights = joined.groupby(level=[0, 1, 2])['height'].mean().fillna(0)
+        matched = (avg_heights > 0).sum()
+        print(f"  Matched {matched}/{len(edges_gdf)} edges to building heights.")
     else:
         avg_heights = pd.Series(0, index=edges_gdf.index)
-
+    
     for u, v, k, data in G_proj.edges(keys=True, data=True):
-        height = avg_heights.get((u, v, k), 0)
-        data['building_height'] = height if height > 0 else 0
+        data['building_height'] = avg_heights.get((u, v, k), 0)
         
         width = data.get('width', 10.0)
         try:
