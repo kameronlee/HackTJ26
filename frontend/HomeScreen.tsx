@@ -3,7 +3,8 @@ import { View, Text, StyleSheet, TextInput, TouchableOpacity, Platform, Activity
 import MapView, { Circle, Marker, Polyline, Region, UrlTile } from 'react-native-maps';
 import BottomSheet, { BottomSheetScrollView } from '@gorhom/bottom-sheet';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { MapPin, Navigation, ChevronLeft, TreePine, Layers } from 'lucide-react-native';
+import { MapPin, Navigation, ChevronLeft, TreePine, Layers, LocateFixed, Map as MapIcon, History } from 'lucide-react-native';
+import * as Location from 'expo-location';
 
 const INITIAL_REGION = {
   latitude: 38.8906,
@@ -49,6 +50,16 @@ export default function HomeScreen() {
 
   // Map layer toggle
   const [mapType, setMapType] = useState<'standard' | 'satellite'>('standard');
+
+  // Navigation mode
+  const [isNavigating, setIsNavigating] = useState(false);
+  const [followMode, setFollowMode] = useState(true);
+
+  // Search History
+  const [searchHistory, setSearchHistory] = useState<any[]>([]);
+
+  // Navigation Heading Tracking
+  const headingSubRef = useRef<Location.LocationSubscription | null>(null);
 
   // --- Overpass POI state (benches & water fountains) ---
   const [benches, setBenches] = useState<OverpassCoord[]>([]);
@@ -187,6 +198,13 @@ export default function HomeScreen() {
       setDestText(shortName);
       setDestinationCoords(coord);
     }
+
+    // Update Search History (keep last 10, unique)
+    setSearchHistory(prev => {
+      const filtered = prev.filter(h => h.place_id !== item.place_id && h.display_name !== item.display_name);
+      return [item, ...filtered].slice(0, 10);
+    });
+
     setSuggestions([]);
     setSearchQuery('');
     setActiveField(null);
@@ -242,6 +260,106 @@ export default function HomeScreen() {
     }
   };
 
+  // --- Navigation Mode ---
+  const startNavigation = async () => {
+    const center = startCoord || (coolRoute.length > 0 ? coolRoute[0] : null);
+    if (!center) return;
+    setIsNavigating(true);
+    setFollowMode(true);
+    bottomSheetRef.current?.close();
+
+    // Start heading tracking
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status === 'granted') {
+        headingSubRef.current = await Location.watchHeadingAsync((headingObj) => {
+          if (mapRef.current) {
+            mapRef.current.animateCamera({ heading: headingObj.trueHeading || headingObj.magHeading }, { duration: 100 });
+          }
+        });
+      }
+    } catch (e) {
+      console.warn("Heading tracking failed:", e);
+    }
+
+    mapRef.current?.animateCamera(
+      {
+        center: { latitude: center.latitude, longitude: center.longitude },
+        pitch: 65,
+        heading: 0,
+        zoom: 30,
+        altitude: 50,
+      },
+      { duration: 1000 }
+    );
+  };
+
+  const exitNavigation = () => {
+    setIsNavigating(false);
+    setFollowMode(false);
+    
+    // Stop heading tracking
+    if (headingSubRef.current) {
+      headingSubRef.current.remove();
+      headingSubRef.current = null;
+    }
+
+    mapRef.current?.animateCamera(
+      { pitch: 0, heading: 0, zoom: 14, altitude: 5000 },
+      { duration: 800 }
+    );
+    if (coolRoute.length > 0) {
+      setTimeout(() => {
+        mapRef.current?.fitToCoordinates(coolRoute, {
+          edgePadding: { top: 120, right: 60, bottom: Dimensions.get('window').height * 0.5, left: 60 },
+          animated: true,
+        });
+      }, 850);
+    }
+    bottomSheetRef.current?.snapToIndex(1);
+  };
+
+  const toggleFollowMode = async () => {
+    const newFollow = !followMode;
+    setFollowMode(newFollow);
+    if (newFollow) {
+      // Re-start heading tracking if we enter follow mode
+      try {
+        if (!headingSubRef.current) {
+           const { status } = await Location.requestForegroundPermissionsAsync();
+           if (status === 'granted') {
+             headingSubRef.current = await Location.watchHeadingAsync((headingObj) => {
+               if (mapRef.current) {
+                 mapRef.current.animateCamera({ heading: headingObj.trueHeading || headingObj.magHeading }, { duration: 100 });
+               }
+             });
+           }
+        }
+      } catch (e) {}
+
+      const center = startCoord || (coolRoute.length > 0 ? coolRoute[0] : null);
+      if (center) {
+        mapRef.current?.animateCamera(
+          {
+            center: { latitude: center.latitude, longitude: center.longitude },
+            pitch: 65, zoom: 20, altitude: 50,
+          },
+          { duration: 600 }
+        );
+      }
+    } else {
+      // Stop heading tracking in free view so the user can pan/rotate freely
+      if (headingSubRef.current) {
+        headingSubRef.current.remove();
+        headingSubRef.current = null;
+      }
+      mapRef.current?.animateCamera(
+        { pitch: 0, heading: 0 },
+        { duration: 600 }
+      );
+    }
+  };
+
   const hasSuggestions = suggestions.length > 0;
 
   return (
@@ -252,12 +370,11 @@ export default function HomeScreen() {
         style={styles.map}
         initialRegion={INITIAL_REGION}
         mapType={mapType}
-        showsUserLocation={true}
+        showsUserLocation={!isNavigating}
         onRegionChangeComplete={handleRegionChange}
+        pitchEnabled={true}
+        rotateEnabled={true}
       >
-        {mapType === 'standard' && (
-          <UrlTile urlTemplate="https://a.tile.openstreetmap.org/{z}/{x}/{y}.png" maximumZ={19} />
-        )}
 
         {/* Standard Route (solid red) */}
         {standardRoute.length > 0 && (
@@ -273,6 +390,15 @@ export default function HomeScreen() {
             <Marker coordinate={coolRoute[0]} pinColor="green" title="Start" />
             <Marker coordinate={coolRoute[coolRoute.length - 1]} pinColor="red" title="End" />
           </>
+        )}
+
+        {/* ---- Simulated User Location (navigation mode) ---- */}
+        {isNavigating && startCoord && (
+          <Marker coordinate={startCoord} anchor={{ x: 0.5, y: 0.5 }}>
+            <View style={styles.simLocationOuter}>
+              <View style={styles.simLocationInner} />
+            </View>
+          </Marker>
         )}
 
         {/* ---- Bench Markers ---- */}
@@ -311,7 +437,7 @@ export default function HomeScreen() {
       </MapView>
 
       {/* ---- POI Status Pill ---- */}
-      {!isExpanded && (
+      {!isExpanded && !isNavigating && (
         <View style={[styles.poiStatusWrap, { top: insets.top + 70 }]} pointerEvents="none">
           {fetchingPOIs && (
             <View style={styles.poiPill}>
@@ -328,7 +454,7 @@ export default function HomeScreen() {
       )}
 
       {/* ---- Top Search UI ---- */}
-      {!isExpanded ? (
+      {isNavigating ? null : !isExpanded ? (
         /* -- Collapsed bar -- */
         <TouchableOpacity
           style={[styles.collapsedBar, { top: insets.top + 10 }]}
@@ -394,11 +520,11 @@ export default function HomeScreen() {
             </View>
           </View>
 
-          {/* Suggestions list */}
-          {hasSuggestions ? (
+          {/* Suggestions or History list */}
+          {(hasSuggestions || (searchHistory.length > 0 && activeField)) ? (
             <FlatList
-              data={suggestions}
-              keyExtractor={(item, i) => String(item.place_id || i)}
+              data={hasSuggestions ? suggestions : searchHistory}
+              keyExtractor={(item, i) => String(item.place_id || item.osm_id || i)}
               keyboardShouldPersistTaps="always"
               style={styles.suggestionsList}
               renderItem={({ item }) => (
@@ -408,7 +534,7 @@ export default function HomeScreen() {
                   activeOpacity={0.6}
                 >
                   <View style={styles.suggestionIcon}>
-                    <MapPin size={18} color="#5f6368" />
+                    {hasSuggestions ? <MapPin size={18} color="#5f6368" /> : <History size={18} color="#5f6368" />}
                   </View>
                   <View style={styles.suggestionTextCol}>
                     <Text style={styles.suggestionMain} numberOfLines={1}>
@@ -422,7 +548,7 @@ export default function HomeScreen() {
               )}
             />
           ) : (
-            /* Find Route button when no suggestions showing */
+            /* Find Route button when no suggestions or history showing */
             <View style={styles.findBtnWrap}>
               <TouchableOpacity style={styles.findBtn} onPress={fetchDualRoute}>
                 <Navigation size={18} color="#fff" style={{ marginRight: 8 }} />
@@ -434,7 +560,7 @@ export default function HomeScreen() {
       )}
 
       {/* ---- Layer Toggle Button ---- */}
-      {!isExpanded && (
+      {!isExpanded && !isNavigating && (
         <TouchableOpacity
           style={[styles.layerToggle, { bottom: insets.bottom + 30 }]}
           onPress={() => setMapType(mapType === 'standard' ? 'satellite' : 'standard')}
@@ -448,7 +574,7 @@ export default function HomeScreen() {
       )}
 
       {/* ---- GO FAB ---- */}
-      {!isExpanded && !comparison && (
+      {!isExpanded && !comparison && !isNavigating && (
         <TouchableOpacity
           style={[styles.goFab, { bottom: insets.bottom + 30 }]}
           onPress={() => setIsExpanded(true)}
@@ -457,6 +583,38 @@ export default function HomeScreen() {
           <Navigation size={22} color="#fff" />
           <Text style={styles.goFabText}>GO</Text>
         </TouchableOpacity>
+      )}
+
+      {/* ---- Navigation Mode Bottom Bar ---- */}
+      {isNavigating && (
+        <View style={[styles.navBottomBar, { paddingBottom: insets.bottom + 10 }]}>
+          <View style={styles.navBarInfo}>
+            <Text style={styles.navBarTime}>
+              {comparison ? `${(comparison.cool_total_meters / 80).toFixed(0)} min` : '--'}
+            </Text>
+            <Text style={styles.navBarDist}>
+              {comparison ? `${(comparison.cool_total_meters / 1609.34).toFixed(2)} mi` : ''}
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={styles.navToggleBtn}
+            onPress={toggleFollowMode}
+            activeOpacity={0.8}
+          >
+            {followMode ? (
+              <MapIcon size={20} color="#fff" />
+            ) : (
+              <LocateFixed size={20} color="#fff" />
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.navExitBtn}
+            onPress={exitNavigation}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.navExitText}>Exit</Text>
+          </TouchableOpacity>
+        </View>
       )}
 
       {/* ---- Loading ---- */}
@@ -494,13 +652,13 @@ export default function HomeScreen() {
             </View>
             <View style={styles.metricCard}>
               <Text style={styles.metricText}>
-                You avoid <Text style={styles.hl}>{comparison.heat_exposure_saved_percentage.toFixed(0)}%</Text> of raw heat exposure!
+                <Text style={styles.hl}>{comparison.shade_multiplier}x</Text> more shade!
               </Text>
             </View>
             <View style={styles.metricCard}>
               <Text style={styles.metricText}>Extra distance: <Text style={styles.hl}>{Math.round(comparison.extra_distance_meters)} m</Text></Text>
             </View>
-            <TouchableOpacity style={styles.navBtn}>
+            <TouchableOpacity style={styles.navBtn} onPress={startNavigation}>
               <Navigation size={18} color="#fff" style={{ marginRight: 8 }} />
               <Text style={styles.navBtnText}>Start Navigation</Text>
             </TouchableOpacity>
@@ -668,4 +826,37 @@ const styles = StyleSheet.create({
     shadowColor: '#4285f4', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 6,
   },
   navBtnText: { color: 'white', fontSize: 17, fontWeight: '700' },
+
+  // --- Simulated Location Marker ---
+  simLocationOuter: {
+    width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(66, 133, 244, 0.25)',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  simLocationInner: {
+    width: 14, height: 14, borderRadius: 7, backgroundColor: '#4285f4',
+    borderWidth: 2.5, borderColor: '#fff',
+    shadowColor: '#4285f4', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.5, shadowRadius: 4,
+  },
+
+  // --- Navigation Mode Bottom Bar ---
+  navBottomBar: {
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: '#1a1a2e', paddingTop: 14, paddingHorizontal: 16,
+    borderTopLeftRadius: 20, borderTopRightRadius: 20,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.3, shadowRadius: 10, elevation: 10,
+    zIndex: 50,
+  },
+  navBarInfo: { flex: 1 },
+  navBarTime: { color: '#fff', fontSize: 28, fontWeight: '800' },
+  navBarDist: { color: '#8e8ea0', fontSize: 14, fontWeight: '600', marginTop: 2 },
+  navToggleBtn: {
+    width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.15)',
+    justifyContent: 'center', alignItems: 'center', marginRight: 12,
+  },
+  navExitBtn: {
+    backgroundColor: '#EA4335', paddingVertical: 12, paddingHorizontal: 24,
+    borderRadius: 24,
+  },
+  navExitText: { color: '#fff', fontSize: 16, fontWeight: '800' },
 });

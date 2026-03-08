@@ -271,12 +271,11 @@ def get_route(req: RouteRequest):
         cool_dist = float(cool_gdf['length'].sum())
         cool_heat_exp = float(cool_gdf['raw_heat_cost'].sum())
         
-        # Calculate Percentage Saved (safeguard against zero division)
-        if std_heat_exp > 0:
-             heat_exposure_saved_pct = ((std_heat_exp - cool_heat_exp) / std_heat_exp) * 100.0
-             heat_exposure_saved_pct = max(0.0, heat_exposure_saved_pct)  # No negative saves
-        else:
-             heat_exposure_saved_pct = 0.0
+        # Calculate shade scores and multiplier
+        std_shade_score = 100.0 - (std_heat_exp / std_dist * 100) if std_dist > 0 else 0.0
+        cool_shade_score = 100.0 - (cool_heat_exp / cool_dist * 100) if cool_dist > 0 else 0.0
+        shade_multiplier = cool_shade_score / std_shade_score if std_shade_score > 0 else 1.0
+        shade_multiplier = max(1.0, shade_multiplier)
 
         return {
             "standard_route": standard_coords,
@@ -285,9 +284,9 @@ def get_route(req: RouteRequest):
                 "standard_total_meters": std_dist,
                 "cool_total_meters": cool_dist,
                 "extra_distance_meters": cool_dist - std_dist,
-                "standard_shade_score": 100.0 - (std_heat_exp / std_dist * 100) if std_dist > 0 else 0.0,
-                "cool_shade_score": 100.0 - (cool_heat_exp / cool_dist * 100) if cool_dist > 0 else 0.0,
-                "heat_exposure_saved_percentage": heat_exposure_saved_pct
+                "standard_shade_score": std_shade_score,
+                "cool_shade_score": cool_shade_score,
+                "shade_multiplier": round(shade_multiplier, 1)
             }
         }
     
