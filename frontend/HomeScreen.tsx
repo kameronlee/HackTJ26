@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, Platform, ActivityIndicator, Alert, Keyboard, Dimensions, FlatList } from 'react-native';
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, Platform, ActivityIndicator, Alert, Keyboard, Dimensions, FlatList, Image } from 'react-native';
 import MapView, { Circle, Marker, Polyline, Region, UrlTile } from 'react-native-maps';
 import BottomSheet, { BottomSheetScrollView } from '@gorhom/bottom-sheet';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { MapPin, Navigation, ChevronLeft, TreePine } from 'lucide-react-native';
+import { MapPin, Navigation, ChevronLeft, TreePine, Layers } from 'lucide-react-native';
 
 const INITIAL_REGION = {
   latitude: 38.8906,
@@ -46,6 +46,9 @@ export default function HomeScreen() {
 
   // UI state
   const [isExpanded, setIsExpanded] = useState(false);
+
+  // Map layer toggle
+  const [mapType, setMapType] = useState<'standard' | 'satellite'>('standard');
 
   // --- Overpass POI state (benches & water fountains) ---
   const [benches, setBenches] = useState<OverpassCoord[]>([]);
@@ -248,10 +251,13 @@ export default function HomeScreen() {
         ref={mapRef}
         style={styles.map}
         initialRegion={INITIAL_REGION}
+        mapType={mapType}
         showsUserLocation={true}
         onRegionChangeComplete={handleRegionChange}
       >
-        <UrlTile urlTemplate="https://a.tile.openstreetmap.org/{z}/{x}/{y}.png" maximumZ={19} />
+        {mapType === 'standard' && (
+          <UrlTile urlTemplate="https://a.tile.openstreetmap.org/{z}/{x}/{y}.png" maximumZ={19} />
+        )}
 
         {/* Standard Route (dashed gray) */}
         {standardRoute.length > 0 && (
@@ -427,6 +433,20 @@ export default function HomeScreen() {
         </View>
       )}
 
+      {/* ---- Layer Toggle Button ---- */}
+      {!isExpanded && (
+        <TouchableOpacity
+          style={[styles.layerToggle, { bottom: insets.bottom + 30 }]}
+          onPress={() => setMapType(mapType === 'standard' ? 'satellite' : 'standard')}
+          activeOpacity={0.85}
+        >
+          <Layers size={16} color="#fff" />
+          <Text style={styles.layerToggleText}>
+            {mapType === 'standard' ? 'Satellite' : 'Map'}
+          </Text>
+        </TouchableOpacity>
+      )}
+
       {/* ---- GO FAB ---- */}
       {!isExpanded && !comparison && (
         <TouchableOpacity
@@ -569,6 +589,17 @@ const styles = StyleSheet.create({
     shadowColor: '#4285f4', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 6, elevation: 4,
   },
   findBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+
+  // --- Layer Toggle ---
+  layerToggle: {
+    position: 'absolute', left: 16, width: 72, height: 72, borderRadius: 12,
+    backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 6, elevation: 6,
+    zIndex: 15, overflow: 'hidden',
+  },
+  layerToggleText: {
+    color: '#fff', fontSize: 11, fontWeight: '700', marginTop: 4,
+  },
 
   // --- GO FAB ---
   goFab: {
