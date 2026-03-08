@@ -1,17 +1,25 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { View, Text, StyleSheet, TextInput, TouchableOpacity, Platform, ActivityIndicator, Alert, Keyboard, Dimensions, FlatList, Image } from 'react-native';
-import MapView, { Circle, Marker, Polyline, Region, UrlTile } from 'react-native-maps';
+import MapView, { Circle, Marker, Polyline, Region, UrlTile, Polygon } from 'react-native-maps';
 import BottomSheet, { BottomSheetScrollView } from '@gorhom/bottom-sheet';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MapPin, Navigation, ChevronLeft, TreePine, Layers, LocateFixed, Map as MapIcon, History, X } from 'lucide-react-native';
 import * as Location from 'expo-location';
 
 const INITIAL_REGION = {
-  latitude: 38.8906,
-  longitude: -76.9803,
-  latitudeDelta: 0.03,
-  longitudeDelta: 0.03,
+  latitude: 38.8895,
+  longitude: -76.9833,
+  latitudeDelta: 0.05,
+  longitudeDelta: 0.05,
 };
+
+// 5km x 5km Bounding Box mapped in the backend
+const BBOX_COORDS = [
+  { latitude: 38.9119, longitude: -77.0121 }, // NW (North, West)
+  { latitude: 38.9119, longitude: -76.9545 }, // NE (North, East)
+  { latitude: 38.8670, longitude: -76.9545 }, // SE (South, East)
+  { latitude: 38.8670, longitude: -77.0121 }, // SW (South, West)
+];
 
 // Zoom threshold: must be zoomed in tighter than this to show POIs
 // (Increased to 0.2 because pitched 3D views dramatically inflate longitudeDelta)
@@ -183,7 +191,9 @@ export default function HomeScreen() {
       console.log('[SEARCH] Fetching results for:', searchQuery);
       setIsSearching(true);
       try {
-        const viewbox = "-77.1197,38.9955,-76.9093,38.7916";
+        // 5x5km BBOX centered on Capitol Hill
+        // viewbox=<x1>,<y1>,<x2>,<y2> -> Left(West), Top(North), Right(East), Bottom(South)
+        const viewbox = "-77.0121,38.9119,-76.9545,38.8670";
         const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(searchQuery)}&format=jsonv2&viewbox=${viewbox}&bounded=1&addressdetails=1&limit=5`;
         const response = await fetch(url, {
           headers: { 'User-Agent': 'CoolPathsApp/1.0' }
@@ -254,8 +264,15 @@ export default function HomeScreen() {
           end_lng: activeEnd.longitude,
         }),
       });
-      if (!response.ok) throw new Error("Failed to calculate routes");
+      
       const data = await response.json();
+      if (!response.ok) {
+        if (response.status === 400 && data.detail) {
+          throw new Error(data.detail);
+        }
+        throw new Error("Failed to calculate routes");
+      }
+      
       setStandardRoute(data.standard_route);
       setCoolRoute(data.cool_route);
       setComparison(data.comparison);
@@ -282,8 +299,9 @@ export default function HomeScreen() {
         bottomSheetRef.current?.snapToIndex(1);
       }
     } catch (err: any) {
-      Alert.alert("Error", err.message);
-      setIsExpanded(true);
+      console.error(err);
+      Alert.alert("Route Error", err.message || "Could not calculate routes. Please try different locations.");
+      setComparison(null);
     } finally {
       setLoading(false);
     }
@@ -444,15 +462,33 @@ export default function HomeScreen() {
       );
     }
     
-    // Find closest from startCoord
-    const start = startCoord || { latitude: 38.8906, longitude: -76.9803 };
-    let closest = pois[0];
-    let minD = Infinity;
+    // NEW HEURISTIC: Find the POI that is closest to our CURRENT POSITION
+    // but also biases towards POIs that are further along our path.
+    // If we have a coolRoute, we use its first coordinate (where we are currently simulated to be)
+    // as our starting point, rather than the raw startCoord (which might be null or outdated).
+    const currentLoc = (coolRoute.length > 0) ? coolRoute[0] : (startCoord || { latitude: 38.8906, longitude: -76.9803 });
+    // Safe extraction of destination coordinates
+    let destLoc = destinationCoords;
+    if (originalDestination && originalDestination.coord) {
+       destLoc = originalDestination.coord;
+    }
+    if (!destLoc) destLoc = currentLoc;
+    
+    let bestPoi = pois[0];
+    let bestScore = Infinity;
+    
+    // We want to minimize (Distance from Us) + 0.5 * (Distance to Destination)
+    // This creates an ellipse of preferred POIs in front of the user towards the goal.
     pois.forEach(p => {
-      const dx = p.latitude - start.latitude;
-      const dy = p.longitude - start.longitude;
-      const d = dx*dx + dy*dy;
-      if (d < minD) { minD = d; closest = p; }
+      // rough euclidian is fine for local distances
+      const dFromUs = Math.sqrt(Math.pow(p.latitude - currentLoc.latitude, 2) + Math.pow(p.longitude - currentLoc.longitude, 2));
+      const dToDest = Math.sqrt(Math.pow(p.latitude - destLoc.latitude, 2) + Math.pow(p.longitude - destLoc.longitude, 2));
+      
+      const score = dFromUs + (0.5 * dToDest);
+      if (score < bestScore) {
+        bestScore = score;
+        bestPoi = p;
+      }
     });
 
     // Save original destination if not already saved
@@ -460,12 +496,12 @@ export default function HomeScreen() {
       setOriginalDestination({ coord: destinationCoords, text: destText });
     }
 
-    const newDest = { latitude: closest.latitude, longitude: closest.longitude };
+    const newDest = { latitude: bestPoi.latitude, longitude: bestPoi.longitude };
     setDestinationCoords(newDest);
     setDestText(`${type === 'bench' ? 'Rest Bench' : 'Water Fountain'}`);
     
-    // Re-fetch route with new destination
-    fetchDualRoute(startCoord, newDest);
+    // Re-fetch route with new destination (from our current simulated location)
+    fetchDualRoute(currentLoc, newDest);
   };
 
   const handleResumeJourney = () => {
@@ -497,6 +533,14 @@ export default function HomeScreen() {
         pitchEnabled={true}
         rotateEnabled={true}
       >
+        {/* Persistent Operating Boundary Box */}
+        <Polygon 
+          coordinates={BBOX_COORDS} 
+          strokeColor="rgba(255, 67, 53, 0.4)" 
+          strokeWidth={4} 
+          lineDashPattern={[10, 10]}
+          fillColor="transparent" 
+        />
 
         {/* Standard Route (solid red) */}
         {standardRoute.length > 0 && (
@@ -515,10 +559,12 @@ export default function HomeScreen() {
         )}
 
         {/* ---- Simulated User Location (navigation mode) ---- */}
-        {isNavigating && startCoord && (
-          <Marker coordinate={startCoord} anchor={{ x: 0.5, y: 0.5 }}>
-            <View style={styles.simLocationOuter}>
-              <View style={styles.simLocationInner} />
+        {isNavigating && coolRoute.length > 0 && (
+          <Marker coordinate={coolRoute[0]} anchor={{ x: 0.5, y: 0.5 }}>
+            <View style={styles.userDotWrap}>
+              <View style={styles.userDotHalo} />
+              <View style={styles.userDotLine} />
+              <View style={styles.userDotCenter} />
             </View>
           </Marker>
         )}
@@ -813,10 +859,17 @@ export default function HomeScreen() {
                 <Text style={[styles.statSub, { color: '#137333' }]}>Score: {comparison.cool_shade_score.toFixed(0)} / 100</Text>
               </View>
             </View>
-            <View style={styles.metricCard}>
-              <Text style={styles.metricText}>
-                <Text style={styles.hl}>{comparison.shade_multiplier}x</Text> more shade!
-              </Text>
+            <View style={{ flexDirection: 'row', gap: 12, marginBottom: 14 }}>
+              <View style={[styles.metricCard, { flex: 1, marginBottom: 0 }]}>
+                <Text style={styles.metricText}>
+                  <Text style={[styles.hl, { color: '#34a853' }]}>{Math.round((comparison.standard_total_meters / 1000) * 93.6)}g</Text> CO₂ saved
+                </Text>
+              </View>
+              <View style={[styles.metricCard, { flex: 1, marginBottom: 0 }]}>
+                <Text style={styles.metricText}>
+                  <Text style={styles.hl}>{comparison.shade_multiplier}x</Text> more shade!
+                </Text>
+              </View>
             </View>
             <View style={styles.metricCard}>
               <Text style={styles.metricText}>Extra distance: <Text style={styles.hl}>{Math.round(comparison.extra_distance_meters)} m</Text></Text>
@@ -993,15 +1046,10 @@ const styles = StyleSheet.create({
   navBtnText: { color: 'white', fontSize: 17, fontWeight: '700' },
 
   // --- Simulated Location Marker ---
-  simLocationOuter: {
-    width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(66, 133, 244, 0.25)',
-    justifyContent: 'center', alignItems: 'center',
-  },
-  simLocationInner: {
-    width: 14, height: 14, borderRadius: 7, backgroundColor: '#4285f4',
-    borderWidth: 2.5, borderColor: '#fff',
-    shadowColor: '#4285f4', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.5, shadowRadius: 4,
-  },
+  userDotWrap: { width: 32, height: 32, justifyContent: 'center', alignItems: 'center' },
+  userDotHalo: { position: 'absolute', width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(66, 133, 244, 0.25)' },
+  userDotLine: { position: 'absolute', width: 14, height: 14, borderRadius: 7, backgroundColor: '#fff', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4 },
+  userDotCenter: { position: 'absolute', width: 10, height: 10, borderRadius: 5, backgroundColor: '#4285f4' },
 
   // --- Navigation Mode Bottom Bar ---
   navBottomBar: {

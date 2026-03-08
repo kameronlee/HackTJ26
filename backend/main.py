@@ -22,14 +22,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configuration & Region (3km x 3km centered on Eastern Senior High School)
-CENTER_LAT = 38.8906
-CENTER_LNG = -76.9803
+# Configuration & Region (5km x 5km centered on 129 15th St SE)
+CENTER_LAT = 38.8895
+CENTER_LNG = -76.9833
 BBOX = {
-    "north": 38.9041,
-    "south": 38.8771,
-    "east": -76.9630,
-    "west": -76.9976
+    "north": 38.9119,
+    "south": 38.8670,
+    "east": -76.9545,
+    "west": -77.0121
 }
 ALPHA = 2.0 # Increased Sun aversion penalty multiplier to force shade detours
 
@@ -40,7 +40,7 @@ G_proj = None
 def init_graph():
     """Downloads and prepares the OSMnx walking network graph."""
     global G, G_proj
-    print(f"Downloading pedestrian network for 3x3km area...")
+    print(f"Downloading pedestrian network for 5x5km area...")
     G = ox.graph_from_bbox(
         bbox=(BBOX["west"], BBOX["south"], BBOX["east"], BBOX["north"]),
         network_type="walk"
@@ -238,6 +238,16 @@ def get_route(req: RouteRequest):
     
     if G_proj is None:
         raise HTTPException(status_code=503, detail="Graph not initialized yet.")
+        
+    # Boundary Check
+    def is_in_bbox(lat, lng):
+        return (lat <= BBOX["north"] and lat >= BBOX["south"] and 
+                lng <= BBOX["east"] and lng >= BBOX["west"])
+                
+    if not is_in_bbox(req.start_lat, req.start_lng):
+        raise HTTPException(status_code=400, detail="Start location is outside the mapped Washington D.C. boundary.")
+    if not is_in_bbox(req.end_lat, req.end_lng):
+        raise HTTPException(status_code=400, detail="Destination is outside the mapped Washington D.C. boundary.")
         
     try:
         # 1. Start/End
