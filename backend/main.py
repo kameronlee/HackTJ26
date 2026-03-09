@@ -222,6 +222,7 @@ class RouteRequest(BaseModel):
     start_lng: float
     end_lat: float
     end_lng: float
+    alpha: float = 2.0  # Dynamic thermal/shade penalty preference (0 to 4)
 
 @app.on_event("startup")
 async def startup_event():
@@ -272,8 +273,14 @@ def get_route(req: RouteRequest):
         except nx.NetworkXNoPath:
              raise HTTPException(status_code=404, detail="No path found between the requested points.")
 
-        # Cool Route (Minimize Heat Exhaustion)
-        cool_route_nodes = nx.shortest_path(G_proj, source=start_node, target=end_node, weight='balanced_cost')
+        # Cool Route (Minimize Heat Exhaustion dynamically using user's chosen alpha)
+        def heat_weight(u, v, d):
+            return min(
+                edge_data.get('length', 1.0) + (edge_data.get('length', 1.0) * edge_data.get('shade_penalty', 0.0) * req.alpha)
+                for key, edge_data in d.items()
+            )
+            
+        cool_route_nodes = nx.shortest_path(G_proj, source=start_node, target=end_node, weight=heat_weight)
         
         # 3. Coordinate Extraction Helper
         def extract_coords(node_list):

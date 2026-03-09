@@ -72,6 +72,10 @@ export default function HomeScreen() {
 
   // Search History
   const [searchHistory, setSearchHistory] = useState<any[]>([]);
+  
+  // User Routing Preferences
+  const [thermalVal, setThermalVal] = useState(2);
+  const [steepnessVal, setSteepnessVal] = useState(2);
 
   // Navigation Heading Tracking
   const headingSubRef = useRef<Location.LocationSubscription | null>(null);
@@ -199,8 +203,16 @@ export default function HomeScreen() {
           headers: { 'User-Agent': 'CoolPathsApp/1.0' }
         });
         const data = await response.json();
-        console.log('[SEARCH] Got', data.length, 'results');
-        setSuggestions(data);
+        
+        // Hard-filter autocomplete results to explicitly prevent out-of-bounds suggestions
+        const filteredData = data.filter((d: any) => {
+          const lat = parseFloat(d.lat);
+          const lon = parseFloat(d.lon);
+          return lat <= 38.9119 && lat >= 38.8670 && lon <= -76.9545 && lon >= -77.0121;
+        });
+        
+        console.log('[SEARCH] Got', filteredData.length, 'valid results');
+        setSuggestions(filteredData);
       } catch (e) {
         console.error("[SEARCH] Error:", e);
         setSuggestions([]);
@@ -262,6 +274,7 @@ export default function HomeScreen() {
           start_lng: activeStart.longitude,
           end_lat: activeEnd.latitude,
           end_lng: activeEnd.longitude,
+          alpha: thermalVal,
         }),
       });
       
@@ -686,6 +699,46 @@ export default function HomeScreen() {
                 </View>
               </View>
             </View>
+
+            {/* --- Routing Preferences Sliders --- */}
+            <View style={styles.prefsWrapper}>
+              
+              {/* Thermal/Cooling Slider (Functional) */}
+              <View style={styles.prefRow}>
+                <Text style={styles.prefLabel}>Thermal/Cooling</Text>
+                <View style={styles.pillGroup}>
+                  {[0, 1, 2, 3, 4].map(v => (
+                    <TouchableOpacity 
+                      key={`t-${v}`} 
+                      style={[styles.prefPill, thermalVal === v && styles.prefPillActive]} 
+                      onPress={() => setThermalVal(v)}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[styles.prefPillText, thermalVal === v && styles.prefPillTextActive]}>{v}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+
+              {/* Steepness Slider (Decorative) */}
+              <View style={styles.prefRow}>
+                <Text style={styles.prefLabel}>Steepness</Text>
+                <View style={styles.pillGroup}>
+                  {[0, 1, 2, 3, 4].map(v => (
+                    <TouchableOpacity 
+                      key={`s-${v}`} 
+                      style={[styles.prefPill, steepnessVal === v && styles.prefPillActive]} 
+                      onPress={() => setSteepnessVal(v)}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[styles.prefPillText, steepnessVal === v && styles.prefPillTextActive]}>{v}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+
+            </View>
+
           </View>
 
           {/* Suggestions or History list */}
@@ -937,6 +990,16 @@ const styles = StyleSheet.create({
   dotRed: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#ea4335', marginRight: 12 },
   fieldInput: { flex: 1, fontSize: 15, color: '#202124', height: '100%' },
   fieldDivider: { height: 6 },
+
+  // --- Preference Sliders ---
+  prefsWrapper: { marginTop: 16, paddingTop: 16, borderTopWidth: 1, borderTopColor: '#f1f3f4', gap: 12 },
+  prefRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  prefLabel: { fontSize: 14, fontWeight: '600', color: '#5f6368', flex: 1 },
+  pillGroup: { flexDirection: 'row', backgroundColor: '#f1f3f4', borderRadius: 20, padding: 4 },
+  prefPill: { width: 34, height: 34, borderRadius: 17, justifyContent: 'center', alignItems: 'center' },
+  prefPillActive: { backgroundColor: '#fff', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 4, elevation: 3 },
+  prefPillText: { fontSize: 13, fontWeight: '700', color: '#70757a' },
+  prefPillTextActive: { color: '#1967d2' },
 
   // --- Suggestions (full-screen list like Google Maps) ---
   suggestionsList: {
